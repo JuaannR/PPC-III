@@ -3,17 +3,10 @@ package practica3;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
-import java.util.Map;
-import java.util.Scanner;
-import java.util.concurrent.ConcurrentHashMap;
-import java.net.InetAddress;
 import java.util.List;
+import java.util.Scanner;
 
 public class Cliente {
-
-    // Lo que el cliente sabe de cada servidor por las tramas que va recibiendo
-    private static final Map<Integer, String> formatos = new ConcurrentHashMap<>();
-    private static final Map<Integer, MensajeDistribucion> ultimo = new ConcurrentHashMap<>();
 
     private static int leerOpcion(Scanner sc) {
         try {
@@ -61,8 +54,7 @@ public class Cliente {
                             continue;
                         }
 
-                        formatos.put(m.getIdServidor(), t.getFormato());
-                        ultimo.put(m.getIdServidor(), m);
+                        EstadoEstaciones.actualizar(m, t.getFormato());
                         System.out.println("\n[DATOS " + t.getFormato() + "] " + m);
                         Archivos.anadir("Servidor" + m.getIdServidor(), "mediciones.txt",
                                 t.getCuerpo().trim() + System.lineSeparator());
@@ -79,6 +71,11 @@ public class Cliente {
         hiloReceptor.start();
 
         // =========================================================================
+        // PASARELAS DEL BROKER (acceso remoto). Cada una arranca sus propios hilos.
+        // =========================================================================
+        PasarelaHttp.iniciar(); // HTTP: index.html y mostrar_datos.html
+
+        // =========================================================================
         // HILO PRINCIPAL (PANEL DE CONTROL INTERACTIVO)
         // Gestiona la interaccion con el usuario por consola y el envio unicast.
         // =========================================================================
@@ -92,7 +89,6 @@ public class Cliente {
                 System.out.print("Introduce el ID del servidor al que quieres mandar la orden (ej: 1, 2, 3...): ");
 
                 int idServidor = scanner.nextInt();
-                int puertoDestinoControl = 6000 + idServidor; // Calculo del puerto unicast por ID
 
                 System.out.println("Comprobando conexion con el Servidor " + idServidor + "...");
 
@@ -103,18 +99,7 @@ public class Cliente {
                 // al puerto de control especifico. Si responde, esta activo. Si no, salta la
                 // excepcion y evitamos abrir el menu para un servidor apagado o inexistente.
                 // =========================================================================
-                try (DatagramSocket socketCheck = new DatagramSocket()) {
-                    byte[] bufferCheck = "PING".getBytes();
-                    InetAddress ipDestino = InetAddress.getByName("127.0.0.1");
-                    DatagramPacket paqueteCheck = new DatagramPacket(bufferCheck, bufferCheck.length, ipDestino,
-                            puertoDestinoControl);
-                    socketCheck.send(paqueteCheck);
-
-                    socketCheck.setSoTimeout(1500); // 1.5 segundos de margen maximo de respuesta
-                    byte[] bufferResp = new byte[1024];
-                    DatagramPacket paqueteResp = new DatagramPacket(bufferResp, bufferResp.length);
-                    socketCheck.receive(paqueteResp);
-                } catch (java.net.SocketTimeoutException e) {
+                if (!ControlServidores.ping(idServidor)) {
                     System.out.println("\n[AVISO] El Servidor " + idServidor
                             + " no esta activo o no existe. Imposible mandar ordenes.");
                     continue; // Vuelve arriba al menu principal de forma limpia
@@ -140,7 +125,7 @@ public class Cliente {
                 switch (accion) {
                     case 1:
                         operacion = "FORMATO";
-                        String actual = formatos.get(idServidor);
+                        String actual = EstadoEstaciones.formato(idServidor);
                         if (actual != null) {
                             parametro = actual.equals("JSON") ? "XML" : "JSON";
                             System.out.println("Formato actual del servidor " + idServidor + ": " + actual
@@ -156,13 +141,13 @@ public class Cliente {
                         parametro = scanner.nextLine();
                         break;
                     case 3:
-                        MensajeDistribucion ultimoMensaje = ultimo.get(idServidor);
-                        if (ultimoMensaje == null) {
+                        Dato ultimoDato = EstadoEstaciones.get(idServidor);
+                        if (ultimoDato == null) {
                             System.out.println("[AVISO] Aun no se han recibido datos del servidor " + idServidor
                                     + ". Espera a que llegue alguna trama.");
                             continue;
                         }
-                        List<Medicion> meds = ultimoMensaje.getMediciones();
+                        List<Medicion> meds = ultimoDato.mensaje.getMediciones();
                         System.out.println("Variables del servidor " + idServidor + ":");
                         for (int i = 0; i < meds.size(); i++) {
                             System.out.println("  " + (i + 1) + ". " + meds.get(i).getNombre()
@@ -209,41 +194,14 @@ public class Cliente {
                 // =========================================================================
                 // ENVIO DE LA ORDEN DE CONTROL POR UNICAST Y ESPERA DE ACK
                 // =========================================================================
-                try (DatagramSocket socketEnvio = new DatagramSocket()) {
-                    MensajeControl orden = new MensajeControl(idServidor, operacion, parametro);
-                    // La orden se codifica en el formato en que el servidor esta enviando sus datos
-                    String formatoOrden = formatos.getOrDefault(idServidor, "JSON");
-                    String cuerpoOrden = formatoOrden.equals("XML") ? XmlSerializador.serializar(orden)
-                            : JsonSerializador.serializar(orden);
-                    byte[] bufferEnvio = new Trama(formatoOrden, "CONTROL", cuerpoOrden).codificar();
-                    InetAddress ipDestino = InetAddress.getByName("127.0.0.1");
-
-                    DatagramPacket paqueteControl = new DatagramPacket(bufferEnvio, bufferEnvio.length, ipDestino,
-                            puertoDestinoControl);
-                    socketEnvio.send(paqueteControl);
-                    System.out.println(
-                            "-> Comando enviado al Servidor " + idServidor + " (Puerto " + puertoDestinoControl + ")");
-
-                    // Espera de la respuesta exclusiva del servidor (ACK)
-                    socketEnvio.setSoTimeout(3000);
-                    byte[] bufferRespuesta = new byte[4096];
-                    DatagramPacket paqueteRespuesta = new DatagramPacket(bufferRespuesta, bufferRespuesta.length);
-
-                    socketEnvio.receive(paqueteRespuesta);
-                    Trama tr = Trama.decodificar(paqueteRespuesta.getData(), paqueteRespuesta.getLength());
-                    RespuestaControl respuesta = tr.getFormato().equals("XML")
-                            ? XmlSerializador.deserializarRespuesta(tr.getCuerpo()) // valida contra respuesta.xsd
-                            : JsonSerializador.deserializarRespuesta(tr.getCuerpo());
+                try {
+                    System.out.println("-> Enviando comando al Servidor " + idServidor
+                            + " (Puerto " + (ControlServidores.PUERTO_BASE_CONTROL + idServidor) + ")");
+                    RespuestaControl respuesta = ControlServidores.enviar(idServidor, operacion, parametro);
                     System.out.println("[RESPUESTA] " + respuesta);
-                    if (respuesta.isOk() && operacion.equals("FORMATO")) {
-                        formatos.put(idServidor, parametro.trim().toUpperCase());
-                    }
-                    Archivos.anadir("Servidor" + idServidor, "respuestas.txt", tr.getCuerpo().trim());
-
                 } catch (java.net.SocketTimeoutException e) {
                     System.out.println("[AVISO] El servidor " + idServidor
                             + " no ha respondido en 3 s. Puedes repetir la orden.");
-
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
