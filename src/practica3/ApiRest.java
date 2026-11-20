@@ -27,8 +27,15 @@ public class ApiRest {
 
     // Registra los endpoints en el servidor HTTP que ya existe
     public static void registrar(HttpServer servidor) {
+        servidor.createContext("/apirest", ApiRest::noEncontrado); // cualquier otra ruta
         servidor.createContext("/apirest/muestra_valores", ApiRest::muestraValores);
         servidor.createContext("/apirest/cambia_parametro", ApiRest::cambiaParametro);
+    }
+
+    // Cualquier otra URL bajo /apirest: 404 en JSON (la API nunca devuelve HTML)
+    private static void noEncontrado(HttpExchange ex) throws IOException {
+        enviarJson(ex, 404, error("Endpoint desconocido: " + ex.getRequestURI().getPath()
+                + ". Disponibles: /apirest/muestra_valores y /apirest/cambia_parametro"));
     }
 
     // GET /apirest/muestra_valores -> ultimos datos de todas las estaciones
@@ -65,7 +72,8 @@ public class ApiRest {
 
     // GET /apirest/cambia_parametro?srv=1&freq=2
     // Parametros: srv (obligatorio) y UNO de estos:
-    //   freq=<segundos> | formato=XML|JSON | envio=ON|OFF | var=<variable>&unidad=<unidad>
+    // freq=<segundos> | formato=XML|JSON | envio=ON|OFF |
+    // var=<variable>&unidad=<unidad>
     private static void cambiaParametro(HttpExchange ex) throws IOException {
         if (!ex.getRequestMethod().equals("GET")) {
             ex.getResponseHeaders().set("Allow", "GET");
@@ -81,6 +89,22 @@ public class ApiRest {
             srv = Integer.parseInt(p.getOrDefault("srv", ""));
         } catch (NumberFormatException e) {
             enviarJson(ex, 400, error("Falta el parametro srv o no es un numero"));
+            return;
+        }
+
+        if (srv < 1 || srv > 5000) {
+            enviarJson(ex, 400, error("Identificador de servidor no valido: " + srv));
+            return;
+        }
+
+        int cuantos = 0;
+        for (String clave : new String[] { "freq", "formato", "envio", "unidad" }) {
+            if (p.containsKey(clave)) {
+                cuantos++;
+            }
+        }
+        if (cuantos > 1) {
+            enviarJson(ex, 400, error("Indica un solo parametro por peticion (freq, formato, envio o var+unidad)"));
             return;
         }
 
