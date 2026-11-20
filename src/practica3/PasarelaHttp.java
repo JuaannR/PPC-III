@@ -26,6 +26,7 @@ public class PasarelaHttp {
             HttpServer servidor = HttpServer.create(new InetSocketAddress(PUERTO), 0);
             servidor.createContext("/index.html", PasarelaHttp::paginaIndex);
             servidor.createContext("/mostrar_datos.html", PasarelaHttp::paginaDatos);
+            ApiRest.registrar(servidor);
             servidor.setExecutor(Executors.newFixedThreadPool(4)); // hasta 4 peticiones a la vez
             servidor.start();
             System.out.println("[HTTP] Escuchando en http://localhost:" + PUERTO + "/index.html");
@@ -40,11 +41,24 @@ public class PasarelaHttp {
     // ---------------------------------------------------------------------
     private static void paginaIndex(HttpExchange ex) throws IOException {
         StringBuilder b = new StringBuilder();
-        b.append("<h2>Acceso web (HTML, solo lectura)</h2>");
-        b.append("<ul><li><a href=\"/mostrar_datos.html\">http://localhost:" + PUERTO
-                + "/mostrar_datos.html</a></li></ul>");
-        // Aqui iran despues la API REST, MQTT y el correo
+
+        b.append("<h2>Acceso web (HTML, solo lectura)</h2><ul>");
+        b.append(enlace("/mostrar_datos.html", "Ultimos datos de las estaciones en tablas"));
+        b.append("</ul>");
+
+        b.append("<h2>API REST (JSON, lectura y escritura)</h2><ul>");
+        b.append(enlace("/apirest/muestra_valores", "Ultimos valores de todas las estaciones"));
+        b.append("</ul>");
+
+        // Aqui iran despues MQTT y el correo
         enviarHtml(ex, pagina("Calidad del aire - Puntos de acceso", b.toString(), false));
+    }
+
+    // Una linea de lista con un enlace (la URL se muestra completa) y su
+    // descripcion
+    private static String enlace(String ruta, String descripcion) {
+        return "<li><a href=\"" + esc(ruta) + "\">http://localhost:" + PUERTO + esc(ruta)
+                + "</a> &ndash; " + esc(descripcion) + "</li>";
     }
 
     // ---------------------------------------------------------------------
@@ -93,7 +107,8 @@ public class PasarelaHttp {
                 + "<body><h1>" + esc(titulo) + "</h1>" + cuerpo + "</body></html>";
     }
 
-    // Responde 200 con el HTML. Este servicio es de solo lectura: solo se admite GET.
+    // Responde 200 con el HTML. Este servicio es de solo lectura: solo se admite
+    // GET.
     private static void enviarHtml(HttpExchange ex, String html) throws IOException {
         if (!ex.getRequestMethod().equals("GET")) {
             ex.getResponseHeaders().set("Allow", "GET");
